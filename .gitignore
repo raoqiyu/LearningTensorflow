@@ -1,0 +1,5 @@
+*.so
+.idea/
+*.py[cod]
+tensorflow/bazel-*
+
