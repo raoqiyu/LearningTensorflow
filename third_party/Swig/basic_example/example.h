@@ -1,3 +1,3 @@
 /* File: example.h */
 
-int fact(int *a,int n);
+int fact(int n);

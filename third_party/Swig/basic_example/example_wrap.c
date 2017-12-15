@@ -2980,9 +2980,8 @@ SWIG_Python_NonDynamicSetAttr(PyObject *obj, PyObject *name, PyObject *value) {
 /* -------- TYPES TABLE (BEGIN) -------- */
 
 #define SWIGTYPE_p_char swig_types[0]
-#define SWIGTYPE_p_int swig_types[1]
-static swig_type_info *swig_types[3];
-static swig_module_info swig_module = {swig_types, 2, 0, 0, 0, 0};
+static swig_type_info *swig_types[2];
+static swig_module_info swig_module = {swig_types, 1, 0, 0, 0, 0};
 #define SWIG_TypeQuery(name) SWIG_TypeQueryModule(&swig_module, &swig_module, name)
 #define SWIG_MangledTypeQuery(name) SWIG_MangledTypeQueryModule(&swig_module, &swig_module, name)
 
@@ -3180,46 +3179,20 @@ extern "C" {
 #endif
 SWIGINTERN PyObject *_wrap_fact(PyObject *SWIGUNUSEDPARM(self), PyObject *args) {
   PyObject *resultobj = 0;
-  int *arg1 = (int *) 0 ;
-  int arg2 ;
-  int temp1 ;
-  int val2 ;
-  int ecode2 = 0 ;
+  int arg1 ;
+  int val1 ;
+  int ecode1 = 0 ;
   PyObject * obj0 = 0 ;
   int result;
   
-  {
-    arg1 = &temp1;
-  }
   if (!PyArg_ParseTuple(args,(char *)"O:fact",&obj0)) SWIG_fail;
-  ecode2 = SWIG_AsVal_int(obj0, &val2);
-  if (!SWIG_IsOK(ecode2)) {
-    SWIG_exception_fail(SWIG_ArgError(ecode2), "in method '" "fact" "', argument " "2"" of type '" "int""'");
+  ecode1 = SWIG_AsVal_int(obj0, &val1);
+  if (!SWIG_IsOK(ecode1)) {
+    SWIG_exception_fail(SWIG_ArgError(ecode1), "in method '" "fact" "', argument " "1"" of type '" "int""'");
   } 
-  arg2 = (int)(val2);
-  result = (int)fact(arg1,arg2);
+  arg1 = (int)(val1);
+  result = (int)fact(arg1);
   resultobj = SWIG_From_int((int)(result));
-  {
-    // Append output value arg1 to resultobj
-    PyObject *o, *o2, *o3;
-    o = PyFloat_FromDouble(*arg1);
-    if ((!resultobj) || (resultobj == Py_None)) {
-      resultobj = o;
-    } else {
-      if (!PyTuple_Check(resultobj)) {
-        PyObject *o2 = resultobj;
-        resultobj = PyTuple_New(1);
-        PyTuple_SetItem(resultobj,0,o2);
-      }
-      o3 = PyTuple_New(1);
-      PyTuple_SetItem(o3,0,o);
-      o2 = resultobj;
-      resultobj = PySequence_Concat(o2,o3);
-      Py_DECREF(o2);
-      Py_DECREF(o3);
-    }
-    
-  }
   return resultobj;
 fail:
   return NULL;
@@ -3236,19 +3209,15 @@ static PyMethodDef SwigMethods[] = {
 /* -------- TYPE CONVERSION AND EQUIVALENCE RULES (BEGIN) -------- */
 
 static swig_type_info _swigt__p_char = {"_p_char", "char *", 0, 0, (void*)0, 0};
-static swig_type_info _swigt__p_int = {"_p_int", "int *", 0, 0, (void*)0, 0};
 
 static swig_type_info *swig_type_initial[] = {
   &_swigt__p_char,
-  &_swigt__p_int,
 };
 
 static swig_cast_info _swigc__p_char[] = {  {&_swigt__p_char, 0, 0, 0},{0, 0, 0, 0}};
-static swig_cast_info _swigc__p_int[] = {  {&_swigt__p_int, 0, 0, 0},{0, 0, 0, 0}};
 
 static swig_cast_info *swig_cast_initial[] = {
   _swigc__p_char,
-  _swigc__p_int,
 };
 
 
