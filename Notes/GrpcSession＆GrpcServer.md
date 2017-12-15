@@ -13,7 +13,7 @@ tensorflow中分布式训练实现，主要涉及以下几个目录
 
 tensorflow进行分布式训练的一般步骤如下(详细代码见[github](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/tools/dist_test/python/mnist_replica.py))：
 
-```python
+```
 cluster = tf.train.ClusterSpec({
       "ps": ps_spec,
       "worker": worker_spec})
