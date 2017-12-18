@@ -50,15 +50,15 @@ tf.placeholder(...)
             # 不同的Op最终都会调用下面的这个_apply_op_helper操作，因此graph的操作类似
             -> _op_def_lib._apply_op_helper                    # tensorflow/python/framework/op_def_library.py
                 -> g = ops._get_graph_from_inputs(...)
-                    -> 这个函数会从传入的输入参数中推断当前的graph，并且验证输入与当前op是否在同一graph中
-                    -> 若输入没有graph(如python int类型参数)，则调用get_default_graph()
+                    -> #这个函数会从传入的输入参数中推断当前的graph，并且验证输入与当前op是否在同一graph中
+                    -># 若输入没有graph(如python int类型参数)，则调用get_default_graph()
                         -> _default_graph_stack.get_default()
-                            -> 这会从 graph stack取出栈顶的graph，若不存在则
-                            -> 调用_DefaultGraphStack._GetGlobalDefaultGraph创建一个_global_default_graph并返回
+                            -> #这会从 graph stack取出栈顶的graph，若不存在则
+                            -> #调用_DefaultGraphStack._GetGlobalDefaultGraph创建一个_global_default_graph并返回
                 -> with g.as_default(), ops.name_scope(name) as scope: # 将上诉过程得到的g，入栈
                        op = g.create_op(...) # 这里进行都会与graph g进行关联（例如，device 分配，node的创建等）
-                -> 退出with后,g也会从_default_graph_stack中弹出，
-                -> 返回op
+                -> #退出with后,g也会从_default_graph_stack中弹出，
+                -> #返回op
 ```                
 当继续创建其它tensorflow变量时，因为_global_default_graph的存在，  
 所有的变量都会在一个graph中，除非_default_graph_stack中存在其它graph，例如用户主动创建graph，并入栈，
@@ -69,8 +69,8 @@ with g.as_default()):
 在python端调用sess.run()时，涉及到将当前最新的graph更新到C++端的session
 ```python
 sess = tf.Session()  
-    -> self._graph = ops.get_default_graph(), 在创建session时，若参数中没有传入graph，
-    -> 则从_default_graph_stack中获取当前所处环境的graph
+    -> self._graph = ops.get_default_graph(), #在创建session时，若参数中没有传入graph，
+    -> #则从_default_graph_stack中获取当前所处环境的graph
 sess.run(fetches, feed_dict, options, run_metadata)
     -> Session._extend_graph()  # 获取当前graph的def，然后传给C++端的session
         -> graph_def, self._current_version = self._graph._as_graph_def(...)
@@ -136,7 +136,7 @@ TF_ExtendGraph   # tensorflow/c/c_api.cc L348, tensorflow的实现逻辑中TF_*�
 
 ```
 有了最新的graph后，就可以根据python端sess.run传来的参数进行相应的操作，这里只看graph相关的过程。  
-如上所诉，session中有一个GraphExecutionState类型的参数，其中保存graph相关内容。此外还有一个ExecutorsAndKeys
+如上所诉，session中有一个GraphExecutionState类型的参数，其中保存graph相关内容。此外还有一个ExecutorsAndKeys(定义在direct_session.h中)
 类型的参数用来保存执行graph时所需的内容。
 
 ```C++
@@ -160,7 +160,7 @@ DirectSession::Run
                         这样新Node只有输入的Edge，没有输出的Edge
                         然后删除原有节点
                     -> FetchOutputs
-                        对Fetch中的每个参数，新建一个Node，关键字为_Retval，然后取代原有的Node
+                        对Fetch中的每个参数，新建一个Node，关键字为_Retval
                         然后原Node的输出连接到新Node的输入，并且在新Node与graph的sink_node之间添加一条ControlEdge
                         然后将新Node作为Fetch参数对应的out_fetch_nodes
                     -> PruneForTargets
@@ -231,6 +231,8 @@ Partition操作完成后，得到多个GraphDef，然后将其转为graph,然后
 
 ```C++
         -> for (auto iter = graphs.begin(); iter != graphs.end(); ++iter) {
+                const string& partition_name = iter->first;
+                std::unique_ptr<Graph>& partition_graph = iter->second;
                ...
                 item->graph = partition_graph.get();
                 item->executor = nullptr;
