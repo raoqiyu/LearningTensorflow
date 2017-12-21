@@ -142,13 +142,13 @@ TF_ExtendGraph   # tensorflow/c/c_api.cc L348, tensorflow的实现逻辑中TF_*�
 ```C++
 DirectSession::Run
 ```
-运行之前需要根据feed和fetch得到graph中，哪些部分是需要运行的
+运行之前需要根据feed和fetch得到graph中，哪些部分（sub-graph)是需要运行(executor),sub-graph的构建过程如下：
 ```C++
     -> DirectSession::GetOrCreateExecutors, 新建一个ExecutorsAndKeys参数，
         -> executor负责执行graph，keys,是指给每一个executor计算一个key，当每次运行时，通过查找key来判断是否
             已存在符合要求的executor，避免重复构造，key的构造是以feed和fetch作为关键字进行的
         -> DirectSession::CreateGraphs # 从当前最新的graph中构建ClientGraph
-            -> execution_state->BuildGraph 
+            -> execution_state->BuildGraph  # tensorflow/core/common_runtime/graph_execution_state.cc
                 从execution_state->graph_中截取必要的部分，构成sub-graph，然后作为Client返回给executor
                 首先将完整的graph复制一份过来，其中还涉及到优化的操作GraphExecutionState::OptimizeGraph
                 然后对复制的graph进行Rewrite得到一份可执行的graph
@@ -243,5 +243,216 @@ Partition操作完成后，得到多个GraphDef，然后将其转为graph,然后
 ```
 
 
+---
+
+```GetOrCreateExecutors``` 操作完成后，每个sub-graph都有自己的executor，接下来就由executor执行各自负责的graph，executor的大致流程为：  
+
+- executor的创建过程       
+    -   将graph转为bytes格式的GraphView，其中包含了NodeItem， NodeItem比Node多了一些kernel的信息
+    -   根据graph中的controlflow生成frame，每个node都计算pending counts（pending count就是node要等待多少个输入才会进入ready状态  
+        这里的frame的作用还没搞清楚，感觉像是循环用到概念，每次迭代都是一个frame，frame保存每一次迭代的状态
+    -   会对自己的graph中每个node建立一个Opkernel（每个operation对应的kernel在tensorflow/core/kernel/中进行注册）
+        kernel创建结束后，还会对当前NodeItem添加一些属性：Merge，Enter, Exit, Sink等状态属性（TODO 属性的具体含义待研究）
+    
+- executor->RunAsync过程
+    - 将没有输入Egde的Node加入到root_nodes集合中（如source_node)
+    - 对root_nodes中的每个node新建一个TaggedNode（TaggedNode还有node，frame，iter等信息），并加入ready队列
+    - 起一个线程调用Process依次对ready队列中TaggedNode中的node进行运算，每个node运算完成后会对其输出进行处理，  
+      并且将当前node的输出边连接的nodes中pending count为0的node加入新的ready队列
+    - 对新的ready队列进行处理
+
+
+上诉执行流程涉及到几个概念
+
+为node建立Opkernel的过程，主要就是调用creat_kernel函数，根据node的定义NodeDef来创建kernel,流程如下：
+
+```C++
+ek->proc_flr.reset(new ProcessFunctionLibraryRuntime(
+      device_mgr_.get(), options_.env, graph_def_version, ek->flib_def.get(),
+      optimizer_opts));   # 根据device_mgr_的相关信息对每种Device都新建一个NewFunctionLibraryRuntime
+auto lib = ek->proc_flr->GetFLR(partition_name); # partition_name就是上面所得partition过程的得到的，其实就是device_name，
+                                                 # 上一语句建立，这里查找并使用
+...
+LocalExecutorParams params;
+...
+params.create_kernel = [this, lib, opseg](const NodeDef& ndef,
+                                              OpKernel** kernel) {
+      // Caches the kernel only if the node is stateful.
+      LOG(INFO) << "FunctionLibraryRuntimeImpl::CreateKernel . custom_kernel_creator out\n";
+      if (!lib->IsStateful(ndef.op())) {
+        return lib->CreateKernel(ndef, kernel);
+      }
+      auto create_fn = [lib, &ndef](OpKernel** kernel) {
+        return lib->CreateKernel(ndef, kernel);
+      };
+```
+其中lib是FunctionLibraryRuntime，根据device_name得到相应的FunctionLibraryRuntime，这里好像只有tensorflow/core/common_runtime/function.cc中的FunctionLibraryRuntimeImpl实现，具体创建kernel的过程如下：
+
+```C++
+lib->CreateKernel(ndef, kernel);
+    ->  FunctionLibraryRuntimeImpl::CreateKernel # tensorflow/core/common_runtime/function.cc
+        -> CreateNonCachedKernel # tensorflow/core/common_runtime/executor.cc
+            -> CreateOpKernel # tensorflow/core/framework/op_kernel.cc
+                -> 根据node_def.op 查找op_def,
+                -> 找到op_def找到对应的KernelRegistration， 
+                    -> KernelRegistration包括：Kernel_def(kernel的定义）, kernel_class_name(kernel的名称)， factory（用于生成该kernel的工厂）
+                    -> FindKernelRegistration # tensorflow/core/framework/op_kernel.cc
+                        -> 根据kernel的device_type，node_def和label组成的key进行查找
+                        -> 主要就是一个全局的静态变量static KernelRegistry* global_kernel_registry中进行查找
+                            -> std::unordered_multimap<string, KernelRegistration> KernelRegistry，key到KernelRegistration的映射
+                        -> 以上是查找已经注册好的OpKernel,具体的注册过程见Operation的笔记
+                -> 找到对应的KernelRegistration后，构建一个OpKernelConstruction context，这是kernel执行所需的参数
+                -> 然后调用KernelRegistration的factory新建一个该类型的kernel并返回
+```
+---
+接下来便是executor具体的执行流程，这里涉及一个较为重要的概念: ```FunctionCallFrame```
+```
+// FunctionCallFrame: 就是对feed和fetch的数据进行操作
+// Represents a function call frame. I.e., the data structure used to
+// pass arguments to a function and retrieve its results.
+// Runtime must arrange accesses to one FunctionCallFrame s.t.
+//   1. SetArgs() happens before any GetArg();
+//   2. GetRetvals happens after all SetRetval();
+FunctionCallFrame call_frame(executors_and_keys->input_types,
+                               executors_and_keys->output_types);
+...
+const Status s = call_frame.SetArgs(feed_args);
+...
+args.call_frame = &call_frame;
+...
+for (const auto& item : executors_and_keys->items) {
+    item.executor->RunAsync(args, barrier->Get());
+  }
+std::vector<Tensor> sorted_outputs;
+const Status s = call_frame.ConsumeRetvals(&sorted_outputs);
+```
+在executor执行之前，设置feed数据，执行结束之后，在获取fetch数据。在上面提到的sub-graph的构建过程的中FeedInputs和FetchOutputs操作中，新建两种分别用于处理feed和fetch的Node: _Arg 和 _Retval,这两种Node对应的Operation定义在tensorflow/core/kernels/function_ops.cc中
+
+```
+class ArgOp : public OpKernel {
+  ...
+  void Compute(OpKernelContext* ctx) override {
+    auto frame = ctx->call_frame();
+    OP_REQUIRES(ctx, frame != nullptr, errors::Internal("no call frame"));
+    Tensor val;
+    OP_REQUIRES_OK(ctx, frame->GetArg(index_, &val));
+    ...
+    ctx->set_output(0, val);
+  }
+    ...
+};
+```
+上面的代码片段就是ArgOp的主要执行逻辑，调用call_frame.GetArg来时获取用户feed的数据，因此在Run之前要先SetArg
+
+```C++
+class RetvalOp : public OpKernel {
+  ...
+  void Compute(OpKernelContext* ctx) override {
+    const Tensor& val = ctx->input(0);
+    auto frame = ctx->call_frame();
+    OP_REQUIRES(ctx, frame != nullptr, errors::Internal("no call frame"));
+    OP_REQUIRES_OK(ctx, frame->SetRetval(index_, val));
+  }
+ ...
+};
+```
+RetvalOp主要就是调用call_frame.SetRetval来时设置用户fetch的数据，然后可以通过GetRetval得到想要的数据  
+两种Op都是通过index_进行数据索引，是因为在executor的的建立过程中feed和fetch都经过排序，然后才建立sub-graph的，然后在FeedInputs和FetchOutputs中建立Node时，会将排序后的顺序索引作为属性传递给Node
+
+---
+
+```C++
+item.executor->RunAsync(args, barrier->Get());
+    -> ExecutorImpl::RunAsync(const Args& args, DoneCallback done) 
+        -> 新建一个ExecutorState(args, this)
+        -> 然后调用它的RunAsync(std::move(done))
+        -> ExecutorState::RunAsync(done) 
+            -> 填充device (TODO 为啥填充，还没研究)
+            -> 对root_nodes中的node建立Taggednode,然后加入ready队列
+            -> ScheduleReady(ready, nullptr); # 处理ready队列
+                -> runner_([=]() { Process(tagged_node, scheduled_usec); }); #其中好多分支，但是ScheduleReady的第二参数为nullptr,因此走这里
+                    -> ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_usec)
+                        -> 首先就是新建一个OpKernelContext::Params params，其包含诸如device，session_state, call_frame, inputs等信息
+```
+获取输入，在Op的操作中（如上面两个Op），输入和输出是通过ctx->input和ctx->output来传递的，                          因此在run之前要对params的input字段进行填充，这个主要由GetInputTensors和PrepareInputs两个函数来完成
+```C++                  
+                        -> 获取输入
+                            -> GetInputTensors
+                                -> 获取当前node所在frame的IterationState的input_tensors
+                            -> PrepareInputs
+                                -> 根据input_tensors的起始地址，将input_tensors中的val填入params.inputs
+                                -> 如果得到的输入不够，则可能是已经有其它支路运行完成（MaybeMarkCompleted）
+                                    然后运行NodeDonw。之后处理下一个TaggedNode, 而不进行实际的运算
+                            (TODO 这部分待研究)
+```
+进行实际的kernel计算
+```C++
+                        -> 然后由params新建一个OpKernelContext， 然后调用device->compute
+                                OpKernelContext ctx(&params, item.num_outputs);
+                                nodestats::SetOpStart(stats);
+                                device->Compute(CHECK_NOTNULL(op_kernel), &ctx);
+                                    -> device的compute方法就是调用op_kernel的compute方法并将ctx传给它
+                                       op_kernel->Compute(context)
+                            计算完成后，如果op_kernel有输出，会放在ctx->output
+```
+然后处理outputs，由ProcessOutputs和PropagateOutputs负责
+```C++
+                        -> ExecutorState::ProcessOutputs,还要做一些类型检查，然后将ctx->output中的数据拿出来
+                        -> PropagateOutputs负责更新所有的下游Node:
+                            ExecutorState::PropagateOutputs
+                                -> 根据当前node的状态，选择不同的处理方式，主要是FrameState的更新，是还处在当前iter还是下一iter
+                                -> 然后FrameState::ActivateNodes来激活下一个FrameState中的node
+                                    -> ExecutorState::FrameState::ActivateNodes
+                                        -> 对当前Node的输出边连接的所有下游节点：
+                                            如果该下游节点：
+                                                如果是Control Edge则减少下游节点的pending counts次数2次
+                                                如果是普通的Edge，则还要区分当前的output中时候含有该下游节点需要的输出
+                                                    如果含有，则减少下游节点的pending counts次数1次，并且判断该下游节点
+                                                            是否需要这个输出
+                                                    如果不含有，则dead enter的判断，这部分待研究
+                                            否则：
+                                                TODO 待研究
+                                                其它的处理方式，总之都是处理pending counts还有是否需要这个输出
+                                            
+                                            -> 如果需要该输出,则将该输出填充到FrameState的IterationState的input_tensors
+                                                (这与上面PrepareInputs的操作是对应的，这里处理每个node时将输出填充到下一次运算的Frame中，
+                                                然后下一次运算时，PrepareInputs从中提取数据)
+                                                
+                                            -> 如果pending counts为0，则将该下游节点加入新的ready队列，并且将下个FrameState的IterationState
+                                               的outstanding_ops数加1
+                                -> 对当前ready队列中的node进行Propagate时都要判断当前Frame是否运行结束了，如果结束就要对Frame进行扫尾工作
+```
+node计算结束后，进行扫尾工作，有NodeDone负责，
+```C++
+                            ExecutorState::NodeDone
+                                -> 更新当前FrameState的IterationState的num_outstanding_ops_
+                                    若果num_outstanding_ops_为0，则当前Frame计算完成，
+                                -> 如果当前node计算正常，返回的ctx->status().ok()为True，
+                                    对PropagateOutputs得到的ready队列调用ScheduleReady进行操作
+                        -> 如果Frame计算完成，调用Finish(),结束
+```
+上诉过程，每个executor都执行一遍，然后开始等待执行结束，如下：
+```C++
+  for (const auto& item : executors_and_keys->items) {
+    item.executor->RunAsync(args, barrier->Get());
+  }
+  WaitForNotification(&run_state, &step_cancellation_manager,
+                      run_options.timeout_in_ms() > 0
+                          ? run_options.timeout_in_ms()
+                          : operation_timeout_in_ms_);
+```
+结束后，需要fetch的数据就会由```_RetVal```节点的RetvalOp写入到call_frame中，
+```
+    std::vector<Tensor> sorted_outputs;
+    const Status s = call_frame.ConsumeRetvals(&sorted_outputs);
+```
+通过call_frame.ConsumeRetvals得到输出并返回
+
+
 #### TODO 
-Executor的执行过程
+- 在BuildGraph中涉及到GraphExecutionState::OptimizeGraph操作  
+- ConstOp的数据存储方式  
+- Executor初始化过程中的BuildControlFlowInfo  
+- FrameState的作用  
+- PrepareInputs的具体逻辑  
+- NodeItem一些属性：Merge，Enter, Exit, Sink等状态属性的作用
