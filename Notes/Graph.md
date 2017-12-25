@@ -267,6 +267,7 @@ Partition操作完成后，得到多个GraphDef，然后将其转为graph,然后
 为node建立Opkernel的过程，主要就是调用creat_kernel函数，根据node的定义NodeDef来创建kernel,流程如下：
 
 ```C++
+#tensorflow/core/common_runtime/direct_session.cc L1183 DirectSession::GetOrCreateExecutors
 ek->proc_flr.reset(new ProcessFunctionLibraryRuntime(
       device_mgr_.get(), options_.env, graph_def_version, ek->flib_def.get(),
       optimizer_opts));   # 根据device_mgr_的相关信息对每种Device都新建一个NewFunctionLibraryRuntime
@@ -285,6 +286,9 @@ params.create_kernel = [this, lib, opseg](const NodeDef& ndef,
       auto create_fn = [lib, &ndef](OpKernel** kernel) {
         return lib->CreateKernel(ndef, kernel);
       };
+}
+...
+#tensorflow/core/common_runtime/direct_session.cc L1183 
 ```
 其中lib是FunctionLibraryRuntime，根据device_name得到相应的FunctionLibraryRuntime，这里好像只有tensorflow/core/common_runtime/function.cc中的FunctionLibraryRuntimeImpl实现，具体创建kernel的过程如下：
 
@@ -293,8 +297,8 @@ lib->CreateKernel(ndef, kernel);
     ->  FunctionLibraryRuntimeImpl::CreateKernel # tensorflow/core/common_runtime/function.cc
         -> CreateNonCachedKernel # tensorflow/core/common_runtime/executor.cc
             -> CreateOpKernel # tensorflow/core/framework/op_kernel.cc
-                -> 根据node_def.op 查找op_def,
-                -> 找到op_def找到对应的KernelRegistration， 
+                -> 根据node_def.op 查找op_def,验证op_def和node_def是否一致
+                -> 找到对应的KernelRegistration， 
                     -> KernelRegistration包括：Kernel_def(kernel的定义）, kernel_class_name(kernel的名称)， factory（用于生成该kernel的工厂）
                     -> FindKernelRegistration # tensorflow/core/framework/op_kernel.cc
                         -> 根据kernel的device_type，node_def和label组成的key进行查找
@@ -358,7 +362,6 @@ class RetvalOp : public OpKernel {
 ```
 RetvalOp主要就是调用call_frame.SetRetval来时设置用户fetch的数据，然后可以通过GetRetval得到想要的数据  
 两种Op都是通过index_进行数据索引，是因为在executor的的建立过程中feed和fetch都经过排序，然后才建立sub-graph的，然后在FeedInputs和FetchOutputs中建立Node时，会将排序后的顺序索引作为属性传递给Node
-
 ---
 
 ```C++
